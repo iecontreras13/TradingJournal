@@ -220,7 +220,7 @@ const TradingJournal = () => {
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <h1 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
               <BarChart2 className="w-8 h-8 text-indigo-600" />
-              "Simple Trading Journal"
+              Simple Trading Journal
             </h1>
 
             <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200">
