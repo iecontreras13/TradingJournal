@@ -12,13 +12,13 @@ import {
   AlertTriangle, 
   BarChart2, 
   Wallet,
-  Pencil, // <--- Icono editar
-  X       // <--- Icono cancelar
+  Pencil, 
+  X,
+  ArrowDownCircle // Nuevo icono para retiros
 } from 'lucide-react';
 
 // --- 1. IMPORTAMOS LAS HERRAMIENTAS DE LA NUBE (FIREBASE) ---
 import { initializeApp } from 'firebase/app';
-// NOTA: Agregué 'set' aquí porque lo usabas abajo pero no estaba importado
 import { getDatabase, ref, onValue, set, update, remove } from 'firebase/database';
 
 // --- 2. TU CONFIGURACIÓN DE CONEXIÓN ---
@@ -40,9 +40,12 @@ const db = getDatabase(app);
 const TradingJournal = () => {
   // Estado inicial
   const [trades, setTrades] = useState([]);
-  const [editingId, setEditingId] = useState(null); // ID que estamos editando
+  const [editingId, setEditingId] = useState(null); 
   const [initialCapital, setInitialCapital] = useState(1000);
   const [loading, setLoading] = useState(true);
+
+  // Nuevo estado para controlar si es Operación o Retiro
+  const [isWithdrawalMode, setIsWithdrawalMode] = useState(false);
 
   // Estado del formulario
   const [formData, setFormData] = useState({
@@ -60,12 +63,10 @@ const TradingJournal = () => {
 
   // --- 3. CONEXIÓN EN TIEMPO REAL (ESCUCHAR CAMBIOS) ---
   useEffect(() => {
-    // Escuchar cambios en los Trades
     const tradesRef = ref(db, 'trades');
     onValue(tradesRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        // Convertir el objeto de Firebase en un Array
         const tradesArray = Object.values(data).sort((a, b) => b.id - a.id);
         setTrades(tradesArray);
       } else {
@@ -74,7 +75,6 @@ const TradingJournal = () => {
       setLoading(false);
     });
 
-    // Escuchar cambios en el Capital Inicial
     const capitalRef = ref(db, 'capital');
     onValue(capitalRef, (snapshot) => {
       const data = snapshot.val();
@@ -86,14 +86,12 @@ const TradingJournal = () => {
 
   // --- 4. FUNCIONES Y LÓGICA ---
 
-  // Guardar cambio de capital
   const handleCapitalChange = (e) => {
     const newVal = parseFloat(e.target.value) || 0;
     setInitialCapital(newVal);
     set(ref(db, 'capital'), newVal);
   };
 
-  // Manejar cambios en los inputs del formulario
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData({
@@ -102,24 +100,37 @@ const TradingJournal = () => {
     });
   };
 
-  // Función para cargar los datos en el formulario para editar
   const handleEdit = (trade) => {
     setEditingId(trade.id);
-    setFormData({
-      date: trade.date,
-      time: trade.time,
-      asset: trade.asset,
-      type: trade.type || 'win', // Aseguramos que cargue el tipo (win/loss)
-      amount: trade.amount,
-      imageUrl: trade.imageUrl || ''
-    });
-    // Scroll hacia arriba
+    
+    // Detectar si es un retiro o una operación normal
+    if (trade.type === 'withdrawal') {
+      setIsWithdrawalMode(true);
+      setFormData({
+        date: trade.date,
+        time: trade.time,
+        asset: '', // No aplica en retiro
+        type: 'withdrawal',
+        amount: trade.amount,
+        imageUrl: '' // No aplica en retiro
+      });
+    } else {
+      setIsWithdrawalMode(false);
+      setFormData({
+        date: trade.date,
+        time: trade.time,
+        asset: trade.asset,
+        type: trade.type || 'win',
+        amount: trade.amount,
+        imageUrl: trade.imageUrl || ''
+      });
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Función para cancelar la edición y limpiar
   const handleCancelEdit = () => {
     setEditingId(null);
+    setIsWithdrawalMode(false); // Resetear modo
     setFormData({
       date: new Date().toISOString().split('T')[0],
       time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
@@ -130,60 +141,70 @@ const TradingJournal = () => {
     });
   };
 
-  // LÓGICA INTELIGENTE: CREAR O EDITAR
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.asset || !formData.amount) return;
+    
+    // Validación: Si es operación normal requiere Activo, si es retiro no.
+    if (!formData.amount) return;
+    if (!isWithdrawalMode && !formData.asset) return;
 
-    // A) SI ESTAMOS EDITANDO (Existe un ID de edición)
+    // Preparamos los datos finales
+    const finalData = {
+      ...formData,
+      amount: parseFloat(formData.amount),
+      // Si es modo retiro, forzamos el tipo 'withdrawal' y limpiamos activo
+      type: isWithdrawalMode ? 'withdrawal' : formData.type,
+      asset: isWithdrawalMode ? 'Retiro' : formData.asset.toUpperCase(),
+    };
+
     if (editingId) {
       const tradeRef = ref(db, 'trades/' + editingId);
-      update(tradeRef, {
-        ...formData,
-        amount: parseFloat(formData.amount),
-      })
-        .then(() => {
-          handleCancelEdit(); // Salimos del modo edición y limpiamos
-        })
+      update(tradeRef, finalData)
+        .then(() => handleCancelEdit())
         .catch((error) => alert('Error al actualizar: ' + error.message));
     } 
-    // B) SI ES NUEVO (No existe ID)
     else {
       const tradeId = Date.now();
       const newTrade = {
         id: tradeId,
-        ...formData,
-        amount: parseFloat(formData.amount),
+        ...finalData,
       };
       
       set(ref(db, 'trades/' + tradeId), newTrade)
-        .then(() => {
-          handleCancelEdit(); // Limpiamos el formulario (reusa la misma lógica de reset)
-        })
+        .then(() => handleCancelEdit())
         .catch((error) => alert('Error al guardar: ' + error.message));
     }
   };
 
-  // Borrar trade de la nube
   const deleteTrade = (id) => {
-    if (window.confirm('¿Seguro que quieres eliminar esta operación?')) {
+    if (window.confirm('¿Seguro que quieres eliminar este registro?')) {
       remove(ref(db, 'trades/' + id));
-      // Si borramos el que estábamos editando, cancelamos la edición
       if (editingId === id) handleCancelEdit();
     }
   };
 
   // --- CÁLCULOS ESTADÍSTICOS ---
-  const totalProfit = trades.reduce((acc, trade) => {
+  
+  // 1. Filtramos solo lo que es TRADING (ignorar retiros para PnL y WinRate)
+  const tradingTrades = trades.filter(t => t.type !== 'withdrawal');
+  
+  // 2. Filtramos los retiros
+  const withdrawals = trades.filter(t => t.type === 'withdrawal');
+  const totalWithdrawalsAmount = withdrawals.reduce((acc, t) => acc + t.amount, 0);
+
+  // 3. Calculamos PnL solo de operaciones
+  const totalProfit = tradingTrades.reduce((acc, trade) => {
     return trade.type === 'win' ? acc + trade.amount : acc - trade.amount;
   }, 0);
 
-  const totalWins = trades.filter((t) => t.type === 'win').length;
-  const winRate =
-    trades.length > 0 ? ((totalWins / trades.length) * 100).toFixed(1) : 0;
+  const totalWins = tradingTrades.filter((t) => t.type === 'win').length;
+  const winRate = tradingTrades.length > 0 ? ((totalWins / tradingTrades.length) * 100).toFixed(1) : 0;
 
-  // Cálculo del Max Drawdown
-  const sortedTrades = [...trades].sort((a, b) => {
+  // 4. CÁLCULO DEL BALANCE ACTUAL (Capital + PnL - Retiros)
+  const currentBalance = initialCapital + totalProfit - totalWithdrawalsAmount;
+
+  // Cálculo del Max Drawdown (Solo sobre operaciones de trading)
+  const sortedTrades = [...tradingTrades].sort((a, b) => {
     return new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`);
   });
 
@@ -223,22 +244,33 @@ const TradingJournal = () => {
               Diario Cloud
             </h1>
 
-            <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200">
-              <div className="flex items-center gap-2 text-slate-500">
-                <Wallet className="w-4 h-4" />
-                <span className="text-sm font-medium">Capital Inicial:</span>
-              </div>
-              <div className="relative">
-                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
-                  $
-                </span>
-                <input
-                  type="number"
-                  value={initialCapital}
-                  onChange={handleCapitalChange}
-                  className="w-28 pl-6 pr-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
+            {/* SECCIÓN CAPITAL Y BALANCE */}
+            <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200">
+                <div className="flex items-center gap-2 text-slate-500">
+                    <Wallet className="w-4 h-4" />
+                    <span className="text-sm font-medium">Capital Inicial:</span>
+                </div>
+                <div className="relative">
+                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
+                    $
+                    </span>
+                    <input
+                    type="number"
+                    value={initialCapital}
+                    onChange={handleCapitalChange}
+                    className="w-28 pl-6 pr-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                </div>
+                </div>
+                
+                {/* AQUI MOSTRAMOS EL BALANCE TOTAL */}
+                <div className="text-right px-2">
+                    <span className="text-xs text-slate-400 font-medium uppercase tracking-wider mr-2">Balance Actual:</span>
+                    <span className={`text-sm font-bold ${currentBalance >= initialCapital ? 'text-green-600' : 'text-slate-700'}`}>
+                        ${currentBalance.toLocaleString('es-ES', { minimumFractionDigits: 2 })}
+                    </span>
+                </div>
             </div>
           </div>
 
@@ -256,7 +288,7 @@ const TradingJournal = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-xs text-slate-500 font-bold uppercase tracking-wide">
-                  PnL Neto
+                  PnL Trading
                 </p>
                 <p
                   className={`text-xl font-bold truncate ${
@@ -317,7 +349,7 @@ const TradingJournal = () => {
                   Trades
                 </p>
                 <p className="text-xl font-bold text-slate-900">
-                  {trades.length}
+                  {tradingTrades.length}
                 </p>
               </div>
             </div>
@@ -325,17 +357,32 @@ const TradingJournal = () => {
         </header>
 
         {/* Formulario */}
-        <section className={`rounded-2xl shadow-sm border p-6 transition-colors ${editingId ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200'}`}>
-          <h2 className={`text-lg font-semibold mb-4 flex items-center gap-2 ${editingId ? 'text-blue-700' : 'text-slate-700'}`}>
-            {editingId ? (
-              <><Pencil className="w-5 h-5" /> Editando Operación</>
-            ) : (
-              <><PlusCircle className="w-5 h-5" /> Registrar Nueva Operación</>
-            )}
-          </h2>
+        <section className={`rounded-2xl shadow-sm border transition-colors ${editingId ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200'}`}>
+          
+          {/* HEADER DEL FORMULARIO CON PESTAÑAS */}
+          <div className="flex items-center gap-4 px-6 pt-6 pb-2 border-b border-slate-100">
+             <button 
+                type="button"
+                onClick={() => setIsWithdrawalMode(false)}
+                className={`text-sm font-bold pb-2 border-b-2 transition-colors flex items-center gap-2 ${!isWithdrawalMode ? 'text-indigo-600 border-indigo-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}
+             >
+                {editingId && !isWithdrawalMode ? <Pencil className="w-4 h-4"/> : <PlusCircle className="w-4 h-4"/>}
+                {editingId && !isWithdrawalMode ? 'Editando Operación' : 'Nueva Operación'}
+             </button>
+
+             <button 
+                type="button"
+                onClick={() => setIsWithdrawalMode(true)}
+                className={`text-sm font-bold pb-2 border-b-2 transition-colors flex items-center gap-2 ${isWithdrawalMode ? 'text-orange-600 border-orange-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}
+             >
+                {editingId && isWithdrawalMode ? <Pencil className="w-4 h-4"/> : <ArrowDownCircle className="w-4 h-4"/>}
+                {editingId && isWithdrawalMode ? 'Editando Retiro' : 'Registrar Retiro'}
+             </button>
+          </div>
+
           <form
             onSubmit={handleSubmit}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end"
+            className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end"
           >
             <div className="lg:col-span-1">
               <label className="block text-xs font-medium text-slate-500 mb-1">
@@ -365,43 +412,49 @@ const TradingJournal = () => {
               />
             </div>
 
-            <div className="lg:col-span-1">
-              <label className="block text-xs font-medium text-slate-500 mb-1">
-                Activo
-              </label>
-              <input
-                type="text"
-                name="asset"
-                required
-                placeholder="BTC"
-                value={formData.asset.toUpperCase()}
-                onChange={handleInputChange}
-                className="w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border uppercase"
-              />
-            </div>
+            {/* CAMPOS SOLO VISIBLES SI NO ES RETIRO */}
+            {!isWithdrawalMode && (
+                <>
+                    <div className="lg:col-span-1">
+                    <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Activo
+                    </label>
+                    <input
+                        type="text"
+                        name="asset"
+                        required={!isWithdrawalMode}
+                        placeholder="BTC"
+                        value={formData.asset.toUpperCase()}
+                        onChange={handleInputChange}
+                        className="w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border uppercase"
+                    />
+                    </div>
 
-            <div className="lg:col-span-1">
-              <label className="block text-xs font-medium text-slate-500 mb-1">
-                Resultado
-              </label>
-              <select
-                name="type"
-                value={formData.type}
-                onChange={handleInputChange}
-                className={`w-full rounded-lg border-slate-200 text-sm p-2.5 border font-medium ${
-                  formData.type === 'win'
-                    ? 'text-green-600 bg-green-50'
-                    : 'text-red-600 bg-red-50'
-                }`}
-              >
-                <option value="win">Ganada (TP)</option>
-                <option value="loss">Perdida (SL)</option>
-              </select>
-            </div>
+                    <div className="lg:col-span-1">
+                    <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Resultado
+                    </label>
+                    <select
+                        name="type"
+                        value={formData.type}
+                        onChange={handleInputChange}
+                        className={`w-full rounded-lg border-slate-200 text-sm p-2.5 border font-medium ${
+                        formData.type === 'win'
+                            ? 'text-green-600 bg-green-50'
+                            : 'text-red-600 bg-red-50'
+                        }`}
+                    >
+                        <option value="win">Ganada (TP)</option>
+                        <option value="loss">Perdida (SL)</option>
+                    </select>
+                    </div>
+                </>
+            )}
 
-            <div className="lg:col-span-1">
+            {/* Si es retiro, ocupamos mas espacio o dejamos hueco, aqui ajustamos el span */}
+            <div className={isWithdrawalMode ? "lg:col-span-2" : "lg:col-span-1"}>
               <label className="block text-xs font-medium text-slate-500 mb-1">
-                Monto ($)
+                {isWithdrawalMode ? 'Monto a Retirar ($)' : 'Monto ($)'}
               </label>
               <input
                 type="number"
@@ -412,7 +465,7 @@ const TradingJournal = () => {
                 step="0.01"
                 value={formData.amount}
                 onChange={handleInputChange}
-                className="w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border"
+                className={`w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border ${isWithdrawalMode ? 'text-orange-600 font-bold' : ''}`}
               />
             </div>
 
@@ -422,14 +475,15 @@ const TradingJournal = () => {
                 className={`flex-1 font-medium rounded-lg text-sm px-5 py-2.5 text-center transition-colors flex items-center justify-center gap-2 text-white ${
                   editingId 
                     ? 'bg-blue-600 hover:bg-blue-700' 
-                    : 'bg-indigo-600 hover:bg-indigo-700'
+                    : isWithdrawalMode 
+                        ? 'bg-orange-500 hover:bg-orange-600'
+                        : 'bg-indigo-600 hover:bg-indigo-700'
                 }`}
               >
-                {editingId ? <Pencil className="w-4 h-4" /> : <PlusCircle className="w-4 h-4" />}
-                {editingId ? 'Guardar' : 'Agregar'}
+                {editingId ? <Pencil className="w-4 h-4" /> : (isWithdrawalMode ? <ArrowDownCircle className="w-4 h-4"/> : <PlusCircle className="w-4 h-4" />)}
+                {editingId ? 'Guardar' : (isWithdrawalMode ? 'Retirar' : 'Agregar')}
               </button>
               
-              {/* Botón de Cancelar solo visible si estamos editando */}
               {editingId && (
                 <button
                   type="button"
@@ -442,19 +496,21 @@ const TradingJournal = () => {
               )}
             </div>
 
-            <div className="lg:col-span-6">
-              <label className="block text-xs font-medium text-slate-500 mb-1">
-                Link del Gráfico (Opcional)
-              </label>
-              <input
-                type="url"
-                name="imageUrl"
-                placeholder="https://..."
-                value={formData.imageUrl}
-                onChange={handleInputChange}
-                className="w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border"
-              />
-            </div>
+            {!isWithdrawalMode && (
+                <div className="lg:col-span-6">
+                <label className="block text-xs font-medium text-slate-500 mb-1">
+                    Link del Gráfico (Opcional)
+                </label>
+                <input
+                    type="url"
+                    name="imageUrl"
+                    placeholder="https://..."
+                    value={formData.imageUrl}
+                    onChange={handleInputChange}
+                    className="w-full rounded-lg border-slate-200 text-sm focus:ring-indigo-500 focus:border-indigo-500 p-2.5 bg-white border"
+                />
+                </div>
+            )}
           </form>
         </section>
 
@@ -478,7 +534,7 @@ const TradingJournal = () => {
                   key={trade.id}
                   trade={trade}
                   onDelete={deleteTrade}
-                  onEdit={handleEdit} // <--- Pasamos la función de editar
+                  onEdit={handleEdit}
                 />
               ))}
             </div>
@@ -489,10 +545,59 @@ const TradingJournal = () => {
   );
 };
 
-const TradeCard = ({ trade, onDelete, onEdit }) => { // <--- Recibimos onEdit
+const TradeCard = ({ trade, onDelete, onEdit }) => {
   const [showImage, setShowImage] = useState(false);
+  
+  // Detectar tipo
+  const isWithdrawal = trade.type === 'withdrawal';
   const isWin = trade.type === 'win';
 
+  // DISEÑO PARA RETIROS
+  if (isWithdrawal) {
+      return (
+        <div className="bg-white rounded-xl shadow-sm border-l-4 border-l-orange-400 p-5 transition-all hover:shadow-md bg-orange-50/30">
+            <div className="flex justify-between items-center">
+                <div className="flex items-center gap-4">
+                    <div className="p-3 rounded-full shrink-0 bg-orange-100 text-orange-600">
+                        <ArrowDownCircle className="w-5 h-5" />
+                    </div>
+                    <div>
+                        <div className="font-bold text-slate-800">Retiro de Capital</div>
+                        <div className="flex items-center gap-3 text-sm text-slate-500 mt-1">
+                            <span className="flex items-center gap-1">
+                                <Calendar className="w-3 h-3" /> {trade.date}
+                            </span>
+                            <span className="flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> {trade.time}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-6">
+                    <span className="text-xl font-bold text-orange-600">
+                        -${trade.amount.toFixed(2)}
+                    </span>
+                    <div className="flex gap-2">
+                         <button
+                            onClick={() => onEdit(trade)}
+                            className="p-2 rounded-lg bg-blue-50 text-blue-500 hover:bg-blue-100 transition-colors"
+                        >
+                            <Pencil className="w-5 h-5" />
+                        </button>
+                        <button
+                            onClick={() => onDelete(trade.id)}
+                            className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
+                        >
+                            <Trash2 className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      );
+  }
+
+  // DISEÑO PARA TRADES (NORMAL)
   return (
     <div
       className={`bg-white rounded-xl shadow-sm border-l-4 p-5 transition-all hover:shadow-md ${
@@ -565,8 +670,7 @@ const TradeCard = ({ trade, onDelete, onEdit }) => { // <--- Recibimos onEdit
                 <ImageIcon className="w-5 h-5" />
               </button>
             )}
-            
-            {/* --- BOTÓN EDITAR (LÁPIZ) --- */}
+             
             <button
               onClick={() => onEdit(trade)}
               className="p-2 rounded-lg bg-blue-50 text-blue-500 hover:bg-blue-100 transition-colors"
